@@ -58,7 +58,7 @@ com.template.batchconsumer
                        // per-listener `concurrency`), ObservabilityConfig (Micrometer)
 ```
 
-Note: dead-letter handling is Kafka-only (publish to `{topic}.DLT` via
+Note: dead-letter handling is Kafka-only (publish to `{topic}-dlt` via
 `DeadLetterPublishingRecoverer`) — there is no DB audit record. This is a
 direct consequence of dropping Postgres (see Decision Log).
 
@@ -140,8 +140,8 @@ and apply backoff/DLT. Classification is by exception type:
   configured max
 
 The `DeadLetterPublishingRecoverer` publishes the failed record to
-`{topic}.DLT`. There is no DB audit record (Postgres dropped, see Decision
-Log) — the `.DLT` topic is the sole record of failures, replayable by
+`{topic}-dlt`. There is no DB audit record (Postgres dropped, see Decision
+Log) — the `-dlt` topic is the sole record of failures, replayable by
 consuming it directly.
 
 Per-consumer parallelism is via Spring Kafka's native `@KafkaListener(concurrency = ...)`
@@ -172,7 +172,7 @@ agent is actually attached (a deployed environment), not in local
   a Reactor-managed thread anywhere in the reactive chain, guarding the
   single-blocking-point invariant (see Decision Log).
 - **Integration tests**: Testcontainers (Kafka only). Covers: normal
-  processing, and an induced failure (asserting the `.DLT` topic receives
+  processing, and an induced failure (asserting the `-dlt` topic receives
   the failed record with the original headers intact).
 - **OTel context-propagation verification test**: asserts, not assumes, that
   the imperative-listener-span → `.block()` → reactive-chain bridge actually
@@ -264,7 +264,21 @@ much surface for a template repo, to be added only when a concrete consumer
 actually needs it. Since Postgres's only purpose in this design was
 idempotency + DLT audit, and DLT audit alone doesn't justify a database
 dependency for every consumer built on this template, Postgres/R2DBC/Flyway
-are dropped entirely. The `.DLT` Kafka topic remains the record of failures.
+are dropped entirely. The `-dlt` Kafka topic remains the record of failures.
+
+### DLT, not DLQ — and current (not legacy) suffix convention
+
+Kafka has no queue primitive — it's topic/partition/log-based — so "Dead
+Letter Queue" (DLQ, the standard term for JMS/RabbitMQ/SQS-style brokers
+that actually have queues) is a misnomer here. Spring Kafka's own API and
+docs consistently say **Dead Letter Topic (DLT)**:
+`DeadLetterPublishingRecoverer`, `@RetryableTopic(dltTopicSuffix = ...)`.
+Verified against the current Spring Kafka reference docs — which also
+surfaced a correction: **the default DLT suffix changed from the legacy
+`.DLT` to `-dlt` as of Spring Kafka 3.3** (the old `.DLT` form now requires
+explicit opt-in). Since this template targets 3.5.x, all DLT topic names in
+this spec use the current `{topic}-dlt` default, not the legacy `.DLT`
+form used in earlier drafts.
 
 ### Tracing via OpenTelemetry, not a custom correlation id
 
