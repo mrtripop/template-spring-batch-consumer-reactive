@@ -40,6 +40,11 @@ public class ConsumerOrchestrationService<T> implements ConsumeMessageUseCase<T>
                 .doOnError(error -> recordErrorOutcome(error, sample));
     }
 
+    // NOTE: consumer.messages.processed counts DELIVERY ATTEMPTS, not unique messages — Spring
+    // Kafka's DefaultErrorHandler redelivers a retryable failure to this same consume() call on
+    // each retry, so a single message that fails, retries twice, then lands in the DLT increments
+    // this counter multiple times (once per attempt) before it's ever counted as a success or
+    // exhausted. Don't read it as "number of distinct messages processed."
     private void recordSuccessOutcome(ProcessingOutcome outcome, Timer.Sample sample) {
         meterRegistry.counter("consumer.messages.processed", "consumer", consumerId, "outcome", outcome.name())
                 .increment();
