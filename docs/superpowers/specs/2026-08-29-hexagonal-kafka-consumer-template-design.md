@@ -7,8 +7,8 @@ Status: Approved by user, pending implementation plan
 
 A reusable Spring Boot template for building event-driven Kafka consumers.
 It provides the *infrastructure* every consumer needs — lifecycle control,
-metrics, structured error handling with retry/DLT, and correlation-id
-propagation — behind a strict hexagonal (ports & adapters) boundary,
+metrics, structured error handling with retry/DLT, and OpenTelemetry-based
+trace correlation — behind a strict hexagonal (ports & adapters) boundary,
 verified by ArchUnit. It does **not** implement a specific business domain;
 the one concrete processor included (`SampleMessageProcessor`) is a
 disposable example that proves the wiring end-to-end. It also does not
@@ -55,7 +55,7 @@ com.template.batchconsumer
 │   └── out
 │       └── kafka    // KafkaListenerLifecycleAdapter implements ConsumerLifecycleControlPort, wrapping KafkaListenerEndpointRegistry
 └── config           // composition root: @Bean wiring, KafkaConsumerConfig (error handler/backoff, DeadLetterPublishingRecoverer,
-                       // per-listener `concurrency`), ObservabilityConfig (context propagation + Micrometer)
+                       // per-listener `concurrency`), ObservabilityConfig (Micrometer)
 ```
 
 Note: dead-letter handling is Kafka-only (publish to `{topic}.DLT` via
@@ -151,9 +151,16 @@ Kafka partitions, not Java parallel Streams").
 
 ### Tracing / logging correlation
 
-*Not yet finalized — see Decision Log, "Tracing across the imperative/reactive
-boundary" for the proposed approach (Reactor Context + automatic context
-propagation), pending final confirmation.*
+No custom correlation-id code — see Decision Log, "Tracing via OpenTelemetry,
+not a custom correlation id". Correlation is entirely OpenTelemetry
+`traceId`/`spanId`, injected into MDC and logs by the external OTel
+javaagent (`-javaagent:opentelemetry-javaagent.jar`), which also
+auto-instruments Kafka producer/consumer spans (extracting/injecting
+`traceparent`/`tracestate` record headers) and Reactor's context
+propagation, independent of any app-level wiring. The template adds no
+tracing library dependency — trace correlation is only present where the
+agent is actually attached (a deployed environment), not in local
+`mvn spring-boot:run` or in tests, by explicit choice (see Decision Log).
 
 ## Testing
 
@@ -178,6 +185,10 @@ propagation), pending final confirmation.*
 - No JSON structured logging by default (left as a documented follow-up).
 - No HTTP-triggered business endpoints beyond the lifecycle-control actuator endpoint.
 - No idempotency store, no persistence layer, no Postgres (see Decision Log).
+- No tracing library dependency (`micrometer-tracing-bridge-otel`) — trace
+  correlation relies solely on the external OTel javaagent, by choice (see
+  Decision Log). Local dev/tests show no trace correlation unless the agent
+  is attached.
 
 ## Decision Log
 
@@ -244,16 +255,27 @@ idempotency + DLT audit, and DLT audit alone doesn't justify a database
 dependency for every consumer built on this template, Postgres/R2DBC/Flyway
 are dropped entirely. The `.DLT` Kafka topic remains the record of failures.
 
-### Tracing across the imperative/reactive boundary (proposed, pending confirmation)
+### Tracing via OpenTelemetry, not a custom correlation id
 
-The `@KafkaListener` method is imperative (single thread, MDC is safe
-thread-local state there), but the reactive body it calls into may hop
-threads (e.g. any I/O driver's own event-loop/pool threads), and plain MDC
-does not survive a thread hop. The documented, Spring-team-built approach
-for exactly this shape: push the correlation id into **Reactor `Context`**
-via `.contextWrite(...)` when building the chain (Context travels with the
-subscription, not the thread), and enable
-`Hooks.enableAutomaticContextPropagation()` (backed by
-`io.micrometer:context-propagation`) so Context values are automatically
-bridged into MDC at every thread switch — no manual `MDC.put()` calls
-scattered through reactive code. Source: [Context Propagation with Project Reactor 3 — spring.io blog, 2023-03-30](https://spring.io/blog/2023/03/30/context-propagation-with-project-reactor-3-unified-bridging-between-reactive/).
+Initially proposed: a hand-rolled `X-Correlation-Id` header + Reactor
+`Context` + `Hooks.enableAutomaticContextPropagation()` (still a valid,
+documented pattern — [Context Propagation with Project Reactor 3 — spring.io blog, 2023-03-30](https://spring.io/blog/2023/03/30/context-propagation-with-project-reactor-3-unified-bridging-between-reactive/)
+— for services with no OTel agent). Superseded once the user confirmed this
+template is expected to run with the OpenTelemetry javaagent attached: the
+agent already auto-instruments Kafka producers/consumers (extracting and
+injecting W3C Trace Context — `traceparent`/`tracestate` — record headers)
+and has its own Reactor instrumentation module propagating trace context
+across reactive operators, entirely independent of app code
+([OpenTelemetry Java instrumentation ecosystem](https://opentelemetry.io/docs/languages/java/instrumentation/)).
+When a span is active, `traceId`/`spanId` land in MDC automatically
+([Observability with Spring Boot 3 — spring.io blog](https://spring.io/blog/2022/10/12/observability-with-spring-boot-3/)).
+A custom correlation id alongside that would just be a second, redundant
+string in every log line with none of the cross-service span linkage OTel
+already provides — so it's dropped entirely.
+
+The template deliberately adds no `micrometer-tracing-bridge-otel` library
+dependency either (user's explicit choice) — correlation is only present
+where the external javaagent is attached (a deployed environment), not in
+local `mvn spring-boot:run` or tests. This is a real, accepted gap for
+local/test observability, traded for a zero-dependency POM; revisit by
+adding the library bridge if local trace correlation is later needed.
