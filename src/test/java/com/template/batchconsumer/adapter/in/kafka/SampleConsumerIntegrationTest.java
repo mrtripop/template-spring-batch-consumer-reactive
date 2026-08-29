@@ -33,15 +33,21 @@ class SampleConsumerIntegrationTest {
 
     // This environment's Docker engine (Docker Desktop 4.78.0 / Engine 29.5.3) enforces a minimum
     // Docker Engine API version of 1.40 (confirmed via `docker version` and raw /vX.Y/info probes:
-    // v1.39 and below get HTTP 400, v1.40+ succeeds). Testcontainers 1.20.1's bundled/shaded
-    // docker-java client defaults to a much older, unspecified API version when nothing is
-    // configured, which this engine rejects outright, so every DockerClientProviderStrategy fails
-    // with "Could not find a valid Docker environment" even though `docker ps`/`docker info` work
-    // fine directly. Pinning it here — before the @Container field below (or anything else in this
-    // class) touches Testcontainers — fixes that without requiring any special flags on the
-    // documented `./mvnw test` invocation.
+    // v1.39 and below get HTTP 400, v1.40+ succeeds). When "api.version" is unset, docker-java (the
+    // client Testcontainers 1.20.1 bundles/shades) defaults to RemoteApiVersion.UNKNOWN_VERSION, an
+    // auto-negotiation placeholder rather than a literal old version number — but this engine
+    // rejects that unnegotiated request outright, so every DockerClientProviderStrategy fails with
+    // "Could not find a valid Docker environment" even though `docker ps`/`docker info` work fine
+    // directly. Pinning it here — before the @Container field below (or anything else in this class)
+    // touches Testcontainers — fixes that without requiring any special flags on the documented
+    // `./mvnw test` invocation. Only set it if not already configured, so this doesn't override a
+    // template adopter's own Docker Engine API version (e.g. an older engine that needs a version
+    // below 1.40): pass -Dapi.version=<your version> (or set the DOCKER_API_VERSION env var, if you
+    // prefer) before running the tests to use a different value instead of this default.
     static {
-        System.setProperty("api.version", "1.41");
+        if (System.getProperty("api.version") == null) {
+            System.setProperty("api.version", "1.41");
+        }
     }
 
     @Container
