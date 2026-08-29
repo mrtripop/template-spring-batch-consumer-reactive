@@ -3,6 +3,8 @@ package com.template.batchconsumer.adapter.in.kafka;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.template.batchconsumer.application.sample.SamplePayload;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -78,12 +80,14 @@ class SampleConsumerIntegrationTest {
     void nonRetryableFailureIsPublishedToDltTopicImmediately() {
         try (var dltConsumer = newDltConsumer("dlt-test-non-retryable")) {
             dltConsumer.subscribe(List.of("sample-events-dlt"));
+            seekToTail(dltConsumer);
 
             kafkaTemplate.send(new ProducerRecord<>(
                     "sample-events", "key-fatal", new SamplePayload("id-fatal", "FAIL_FATAL")));
 
-            var records = dltConsumer.poll(Duration.ofSeconds(15));
-            assertThat(records.count()).isGreaterThanOrEqualTo(1);
+            assertThat(pollForKey(dltConsumer, "key-fatal", Duration.ofSeconds(15)))
+                    .as("DLT record with key 'key-fatal' produced by this test's own message")
+                    .isTrue();
         }
     }
 
@@ -91,13 +95,16 @@ class SampleConsumerIntegrationTest {
     void retryableFailureExhaustsRetriesAndLandsInDlt() {
         try (var dltConsumer = newDltConsumer("dlt-test-retryable")) {
             dltConsumer.subscribe(List.of("sample-events-dlt"));
+            seekToTail(dltConsumer);
 
             kafkaTemplate.send(new ProducerRecord<>(
                     "sample-events", "key-retry", new SamplePayload("id-retry", "FAIL_RETRYABLE")));
 
-            // 3 attempts with 1s/2s backoff (application.yml) should exhaust well within 20s.
-            var records = dltConsumer.poll(Duration.ofSeconds(20));
-            assertThat(records.count()).isGreaterThanOrEqualTo(1);
+            // 4 total deliveries (1 initial + 3 retries) with 1s/2s/4s backoff (application.yml's
+            // consumer.sample.retry.max-attempts: 3) should exhaust well within 20s.
+            assertThat(pollForKey(dltConsumer, "key-retry", Duration.ofSeconds(20)))
+                    .as("DLT record with key 'key-retry' produced by this test's own message")
+                    .isTrue();
         }
     }
 
@@ -112,15 +119,8 @@ class SampleConsumerIntegrationTest {
             // this topic. A brand-new "earliest" consumer group would otherwise read those leftover
             // records and produce a false positive here. Seeking to the current tail first scopes
             // the assertion to records produced by *this* test's message, matching what the test
-            // actually intends to verify. Partition assignment only completes once the group
-            // rebalance finishes, so poll in a loop until it does rather than a single fixed-delay
-            // poll (which can race ahead of assignment and silently seek nothing).
-            long assignmentDeadline = System.currentTimeMillis() + Duration.ofSeconds(10).toMillis();
-            while (dltConsumer.assignment().isEmpty() && System.currentTimeMillis() < assignmentDeadline) {
-                dltConsumer.poll(Duration.ofMillis(100));
-            }
-            assertThat(dltConsumer.assignment()).as("DLT consumer partition assignment").isNotEmpty();
-            dltConsumer.seekToEnd(dltConsumer.assignment());
+            // actually intends to verify.
+            seekToTail(dltConsumer);
 
             kafkaTemplate.send(new ProducerRecord<>(
                     "sample-events", "key-ok", new SamplePayload("id-ok", "hello")));
@@ -128,6 +128,42 @@ class SampleConsumerIntegrationTest {
             var records = dltConsumer.poll(Duration.ofSeconds(5));
             assertThat(records.count()).isZero();
         }
+    }
+
+    // Seeks a freshly-subscribed DLT consumer to the current end of its assigned partitions,
+    // so subsequent polls only surface records produced *after* this call — i.e. records this
+    // test's own message actually produced, not leftovers from another @Test method that ran
+    // first on the shared, class-scoped Kafka broker (JUnit 5 does not guarantee method order).
+    // Partition assignment only completes once the group rebalance finishes, so poll in a loop
+    // until it does rather than a single fixed-delay poll (which can race ahead of assignment
+    // and silently seek nothing).
+    private void seekToTail(KafkaConsumer<String, byte[]> consumer) {
+        long assignmentDeadline = System.currentTimeMillis() + Duration.ofSeconds(10).toMillis();
+        while (consumer.assignment().isEmpty() && System.currentTimeMillis() < assignmentDeadline) {
+            consumer.poll(Duration.ofMillis(100));
+        }
+        assertThat(consumer.assignment()).as("DLT consumer partition assignment").isNotEmpty();
+        consumer.seekToEnd(consumer.assignment());
+    }
+
+    // Polls the DLT topic until a record whose key equals `expectedKey` shows up, or the given
+    // timeout elapses. Checking the key (not just "some record arrived") closes the remaining gap
+    // even after seekToTail: two DLT tests each expecting >= 1 record could otherwise both pass
+    // by reading each other's record if seek/timing ever lined up unexpectedly, and — for the
+    // "immediately" test specifically — a record with the wrong key can't be mistaken for this
+    // test's own message, which is what makes that test actually exercise "this message's fatal
+    // exception skipped retries," not just "some DLT record showed up within 15s."
+    private boolean pollForKey(KafkaConsumer<String, byte[]> consumer, String expectedKey, Duration timeout) {
+        long deadline = System.currentTimeMillis() + timeout.toMillis();
+        while (System.currentTimeMillis() < deadline) {
+            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofSeconds(1));
+            for (ConsumerRecord<String, byte[]> record : records.records("sample-events-dlt")) {
+                if (expectedKey.equals(record.key())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // The brief specifies `org.testcontainers.kafka.KafkaContainer` (Testcontainers 1.20.1's class
