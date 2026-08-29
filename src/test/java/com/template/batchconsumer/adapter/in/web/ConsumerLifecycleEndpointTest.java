@@ -4,9 +4,11 @@ import com.template.batchconsumer.application.port.in.ConsumerLifecycleUseCase;
 import com.template.batchconsumer.domain.model.ConsumerStatus;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.springframework.boot.actuate.endpoint.web.WebEndpointResponse;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.NoSuchElementException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
@@ -29,13 +31,26 @@ class ConsumerLifecycleEndpointTest {
         ConsumerStatus status = new ConsumerStatus("sample-consumer", ConsumerStatus.State.PAUSED, Instant.now());
         when(useCase.status("sample-consumer")).thenReturn(status);
 
-        assertThat(endpoint.status("sample-consumer")).isEqualTo(status);
+        WebEndpointResponse<ConsumerStatus> response = endpoint.status("sample-consumer");
+
+        assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_OK);
+        assertThat(response.getBody()).isEqualTo(status);
+    }
+
+    @Test
+    void statusReturnsNotFoundForUnknownConsumerId() {
+        when(useCase.status("does-not-exist")).thenThrow(new NoSuchElementException("no such container"));
+
+        WebEndpointResponse<ConsumerStatus> response = endpoint.status("does-not-exist");
+
+        assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_NOT_FOUND);
     }
 
     @Test
     void applyActionPauseCallsPause() {
-        endpoint.applyAction("sample-consumer", ConsumerLifecycleEndpoint.Action.PAUSE);
+        WebEndpointResponse<Void> response = endpoint.applyAction("sample-consumer", ConsumerLifecycleEndpoint.Action.PAUSE);
         org.mockito.Mockito.verify(useCase).pause("sample-consumer");
+        assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_OK);
     }
 
     @Test
@@ -54,5 +69,16 @@ class ConsumerLifecycleEndpointTest {
     void applyActionStartCallsStart() {
         endpoint.applyAction("sample-consumer", ConsumerLifecycleEndpoint.Action.START);
         org.mockito.Mockito.verify(useCase).start("sample-consumer");
+    }
+
+    @Test
+    void applyActionReturnsNotFoundForUnknownConsumerId() {
+        org.mockito.Mockito.doThrow(new NoSuchElementException("no such container"))
+                .when(useCase).pause("does-not-exist");
+
+        WebEndpointResponse<Void> response =
+                endpoint.applyAction("does-not-exist", ConsumerLifecycleEndpoint.Action.PAUSE);
+
+        assertThat(response.getStatus()).isEqualTo(WebEndpointResponse.STATUS_NOT_FOUND);
     }
 }
