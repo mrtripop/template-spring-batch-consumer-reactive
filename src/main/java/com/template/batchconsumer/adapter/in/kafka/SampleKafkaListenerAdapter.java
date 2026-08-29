@@ -10,6 +10,12 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
+/**
+ * Example Kafka listener adapter — bridges Spring Kafka's imperative {@code @KafkaListener}
+ * delivery model into the reactive {@link ConsumeMessageUseCase}. Delete this class (and
+ * {@code SamplePayload}/{@code SampleMessageProcessor} from the application.sample package)
+ * when adopting the template for a real consumer.
+ */
 @Component
 public class SampleKafkaListenerAdapter {
 
