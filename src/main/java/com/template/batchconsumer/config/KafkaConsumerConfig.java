@@ -20,6 +20,7 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 import org.springframework.util.backoff.ExponentialBackOff;
@@ -48,7 +49,18 @@ public class KafkaConsumerConfig {
         JacksonJsonDeserializer<SamplePayload> valueDeserializer = new JacksonJsonDeserializer<>(SamplePayload.class);
         valueDeserializer.addTrustedPackages(SamplePayload.class.getPackageName());
 
-        return new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), valueDeserializer);
+        // ErrorHandlingDeserializer wraps the Jackson deserializer so a record whose value isn't
+        // valid SamplePayload JSON (the classic Kafka "poison pill") doesn't throw out of
+        // Consumer.poll() itself, which would happen BEFORE any listener invocation and would
+        // wedge the consumer forever (offset never advances, DefaultErrorHandler/
+        // DeadLetterPublishingRecoverer never sees it — that path only runs for exceptions thrown
+        // from the listener, not from deserialization). Instead the failure is captured as a null
+        // value plus a DeserializationException header on the record, which then flows through
+        // the normal @KafkaListener -> DefaultErrorHandler -> DLT path like any other failure.
+        ErrorHandlingDeserializer<SamplePayload> errorHandlingValueDeserializer =
+                new ErrorHandlingDeserializer<>(valueDeserializer);
+
+        return new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), errorHandlingValueDeserializer);
     }
 
     @Bean
@@ -81,6 +93,12 @@ public class KafkaConsumerConfig {
         return new KafkaTemplate<>(kafkaProducerFactory);
     }
 
+    // NOTE: this error handler's retry/DLT metrics (consumer.messages.retried,
+    // consumer.messages.dlt) are tagged with the single injected consumer.sample.id. If a real
+    // adopter of this template adds a second @KafkaListener sharing this same error-handler bean,
+    // that second consumer's retry/DLT events would be mislabeled under this consumer's id —
+    // each additional consumer needs its own kafkaErrorHandler-style bean parameterized with its
+    // own id (mirroring sampleConsumerFactory's per-consumer bean pattern above).
     @Bean
     public DefaultErrorHandler kafkaErrorHandler(
             KafkaTemplate<Object, Object> kafkaTemplate,
