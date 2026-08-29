@@ -174,6 +174,17 @@ agent is actually attached (a deployed environment), not in local
 - **Integration tests**: Testcontainers (Kafka only). Covers: normal
   processing, and an induced failure (asserting the `.DLT` topic receives
   the failed record with the original headers intact).
+- **OTel context-propagation verification test**: asserts, not assumes, that
+  the imperative-listener-span → `.block()` → reactive-chain bridge actually
+  preserves trace context — a span created inside the reactive body (post-
+  `.block()` bridge, e.g. from `SampleMessageProcessor` making a downstream
+  call) must nest as a child of the Kafka consumer span. Verified with
+  OTel SDK's `InMemorySpanExporter` test utility, run with the OTel javaagent
+  (or an equivalent test-scope OTel SDK setup) attached in the test JVM. This
+  exists specifically because Reactor+OTel context propagation has
+  documented rough edges in some configurations (see Decision Log) — a
+  regression here (agent upgrade, Reactor upgrade) must fail CI, not surface
+  as a broken trace in production.
 - **Local dev**: `docker-compose.yml` with Kafka (KRaft mode, no
   Zookeeper).
 
@@ -279,3 +290,20 @@ where the external javaagent is attached (a deployed environment), not in
 local `mvn spring-boot:run` or tests. This is a real, accepted gap for
 local/test observability, traded for a zero-dependency POM; revisit by
 adding the library bridge if local trace correlation is later needed.
+
+**Caveat, explicitly verified rather than assumed:** the OTel agent's
+`kafka-clients` and `reactor-3.1` instrumentation modules are mature and are
+specifically built for exactly this bridge (a non-reactive-aware
+instrumented entry point handing off into a reactive chain), but Reactor
+context propagation under the OTel javaagent has real, documented rough
+edges in other configurations — e.g.
+[Reactor WebClient not using the span in context — issue #10011](https://github.com/open-telemetry/opentelemetry-java-instrumentation/issues/10011)
+and
+[wrong parent span with Spring Cloud Gateway — issue #9495](https://github.com/open-telemetry/opentelemetry-java-instrumentation/issues/9495).
+Since any consumer built on this template could make an instrumented
+downstream reactive call from within `MessageProcessor`, this is a real
+risk, not a hypothetical one. Rather than trust the agent by assumption,
+the template includes an explicit integration test (see Testing) asserting
+the parent/child span relationship actually holds across the `.block()`
+bridge — a regression fails CI instead of surfacing as a broken trace in
+production.
