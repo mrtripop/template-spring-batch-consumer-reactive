@@ -7,30 +7,29 @@ Status: Approved by user, pending implementation plan
 
 A reusable Spring Boot template for building event-driven Kafka consumers.
 It provides the *infrastructure* every consumer needs — lifecycle control,
-metrics, structured error handling with retry/DLT, idempotency, and
-correlation-id propagation — behind a strict hexagonal (ports & adapters)
-boundary, verified by ArchUnit. It does **not** implement a specific business
-domain; the one concrete processor included (`SampleMessageProcessor`) is a
-disposable example that proves the wiring end-to-end.
+metrics, structured error handling with retry/DLT, and correlation-id
+propagation — behind a strict hexagonal (ports & adapters) boundary,
+verified by ArchUnit. It does **not** implement a specific business domain;
+the one concrete processor included (`SampleMessageProcessor`) is a
+disposable example that proves the wiring end-to-end. It also does not
+implement idempotency or any persistence — see Decision Log.
 
 ## Stack
 
 - Java 21, Maven, single module
 - Spring Boot 3.5.x (chosen over the newer 4.1.x line for ecosystem maturity —
-  Spring Kafka, Testcontainers, R2DBC drivers, ArchUnit all have longer track
-  records against 3.5.x)
+  Spring Kafka, Testcontainers, ArchUnit all have longer track records
+  against 3.5.x)
 - `spring-boot-starter-webflux`
-- `spring-kafka` (`@KafkaListener`-based; Reactor Kafka was considered but
-  Reactor Kafka's maintenance status made Spring Kafka the safer choice —
-  the listener itself is imperative, but hands off into the reactive
-  application layer)
-- `spring-boot-starter-data-r2dbc` + `r2dbc-postgresql`
-- `flyway-core` + `org.postgresql:postgresql` (JDBC driver — used only by
-  Flyway at migration time; Flyway does not speak R2DBC)
+- `spring-kafka` (`@KafkaListener`-based — see Decision Log, "Spring Kafka
+  over Reactor Kafka")
 - `spring-boot-starter-actuator` + `micrometer-registry-prometheus`
 - No Lombok — plain Java records/classes
-- Test scope: `archunit-junit5`, `testcontainers` (`postgresql`, `kafka`,
-  `junit-jupiter`), `spring-kafka-test`
+- No PostgreSQL / R2DBC / Flyway — dropped, see Decision Log ("No
+  idempotency store, no Postgres")
+- Test scope: `archunit-junit5`, `testcontainers` (`kafka`,
+  `junit-jupiter`), `spring-kafka-test`, `blockhound-junit-platform` (see
+  Decision Log, "Single blocking bridge point")
 
 Kafka message format: **JSON** (Jackson), no schema registry.
 
@@ -46,19 +45,22 @@ com.template.batchconsumer
 ├── application
 │   ├── port
 │   │   ├── in       // ConsumeMessageUseCase, ConsumerLifecycleUseCase, MessageProcessor<T>
-│   │   └── out      // IdempotencyStorePort, DeadLetterAuditPort
+│   │   └── out      // ConsumerLifecycleControlPort (start/stop/pause/resume/status by listener id)
 │   ├── service      // ConsumerOrchestrationService (implements ConsumeMessageUseCase + ConsumerLifecycleUseCase)
 │   └── sample       // SampleMessageProcessor implements MessageProcessor<T> — example only, delete-me
 ├── adapter
 │   ├── in
-│   │   ├── kafka    // @KafkaListener adapter — depends only on ConsumeMessageUseCase
+│   │   ├── kafka    // @KafkaListener adapter — depends only on ConsumeMessageUseCase; bridges imperative->reactive (see Decision Log)
 │   │   └── web      // Actuator lifecycle endpoint — depends only on ConsumerLifecycleUseCase
 │   └── out
-│       ├── persistence  // R2DBC entities/repos implementing IdempotencyStorePort, DeadLetterAuditPort
-│       └── kafka        // DLT topic publisher adapter
-└── config           // composition root: @Bean wiring, KafkaConsumerConfig (error handler/backoff/recoverer),
-                       // R2dbcConfig, ObservabilityConfig (MDC + Micrometer)
+│       └── kafka    // KafkaListenerLifecycleAdapter implements ConsumerLifecycleControlPort, wrapping KafkaListenerEndpointRegistry
+└── config           // composition root: @Bean wiring, KafkaConsumerConfig (error handler/backoff, DeadLetterPublishingRecoverer,
+                       // per-listener `concurrency`), ObservabilityConfig (context propagation + Micrometer)
 ```
+
+Note: dead-letter handling is Kafka-only (publish to `{topic}.DLT` via
+`DeadLetterPublishingRecoverer`) — there is no DB audit record. This is a
+direct consequence of dropping Postgres (see Decision Log).
 
 ### Layer responsibilities
 
@@ -76,7 +78,8 @@ com.template.batchconsumer
   into a call against an application port interface. Never depends on
   `adapter.out` concrete classes.
 - **adapter.out**: implements the outbound ports against real
-  infrastructure (Postgres via R2DBC, Kafka DLT producer).
+  infrastructure — here, just `KafkaListenerLifecycleAdapter` wrapping
+  `KafkaListenerEndpointRegistry`.
 - **config**: the only place allowed to see every layer at once, since it is
   the Spring composition root wiring beans together. Nothing else may depend
   on `config`.
@@ -84,13 +87,17 @@ com.template.batchconsumer
 ## ArchUnit rules (enforced in `HexagonalArchitectureTest`, run as a normal test)
 
 1. `domain` depends on nothing else in this project.
-2. `application` (including `application.sample`) depends only on `domain`.
+2. `application` (including `application.sample`) depends only on `domain`,
+   plus `io.micrometer..` and `org.slf4j..` — an explicit, documented
+   exception for cross-cutting observability concerns (see Decision Log,
+   "Metrics/logging as an allowed exception"). No other third-party or
+   Spring package may be imported by `application`.
 3. `adapter.*` depends on `application` and `domain`, never the reverse.
 4. `adapter.in` must not import `adapter.out.*` concrete classes — only
    `application.port.out` interfaces (prevents adapter-to-adapter calls that
-   bypass the application layer, e.g. a Kafka error-handler recoverer wired
-   directly to the persistence adapter instead of through
-   `DeadLetterAuditPort`).
+   bypass the application layer, e.g. a lifecycle-control call reaching
+   `KafkaListenerEndpointRegistry` directly instead of through
+   `ConsumerLifecycleControlPort`).
 5. `config` is declared the top of the dependency graph: allowed to depend
    on all layers; no other package may depend on `config`.
 
@@ -101,7 +108,11 @@ com.template.batchconsumer
 Backed by Spring Kafka's `KafkaListenerEndpointRegistry`, which already
 supports per-container pause/resume/start/stop — no hand-rolled state
 machine. `ConsumerOrchestrationService` implements `ConsumerLifecycleUseCase`
-by delegating to the registry, keyed by listener id.
+by delegating to `ConsumerLifecycleControlPort` (`application.port.out`),
+keyed by listener id. The port exists specifically so `application` never
+imports `org.springframework.kafka.config.KafkaListenerEndpointRegistry`
+directly — that type is implemented behind the port by
+`adapter.out.kafka.KafkaListenerLifecycleAdapter`.
 
 ### Ops surface
 
@@ -119,49 +130,44 @@ Recorded in `ConsumerOrchestrationService` around the `MessageProcessor` call:
 
 ### Retry / Dead-letter
 
-Spring Kafka's `DefaultErrorHandler` with `ExponentialBackOff`, classifying
-by exception type:
+The Kafka listener bridges into the reactive application layer via a
+**single, outermost `.block(Duration)` call** — see Decision Log, "Single
+blocking bridge point" — so that Spring Kafka's synchronous
+`DefaultErrorHandler` can observe exceptions thrown from the reactive chain
+and apply backoff/DLT. Classification is by exception type:
 - `NonRetryableProcessingException` → straight to the recoverer, no retry
-- `RetryableProcessingException` → backed-off retries up to a configured max
+- `RetryableProcessingException` → `ExponentialBackOff` retries up to a
+  configured max
 
 The `DeadLetterPublishingRecoverer` publishes the failed record to
-`{topic}.DLT` and, through the `DeadLetterAuditPort` interface (never the
-concrete adapter — see ArchUnit rule 4), writes a `dead_letter_record` row
-for inspection/replay.
+`{topic}.DLT`. There is no DB audit record (Postgres dropped, see Decision
+Log) — the `.DLT` topic is the sole record of failures, replayable by
+consuming it directly.
 
-### Idempotency
-
-Before calling `MessageProcessor`, `ConsumerOrchestrationService` calls
-`IdempotencyStorePort.tryClaim(messageKey)`, implemented via R2DBC as
-`INSERT ... ON CONFLICT DO NOTHING`, checking rows-affected to atomically
-detect a duplicate delivery.
-
-Table: `idempotency_record(message_key PK, consumer_id, processed_at)`
+Per-consumer parallelism is via Spring Kafka's native `@KafkaListener(concurrency = ...)`
+(partition-based, one thread per partition subset) — not a hand-rolled
+thread pool, not Java parallel Streams (see Decision Log, "Concurrency via
+Kafka partitions, not Java parallel Streams").
 
 ### Tracing / logging correlation
 
-The Kafka adapter reads an `X-Correlation-Id` record header (generates a
-UUID if absent), places it in MDC before invoking the use case, and
-propagates it into the DLT audit record and all log lines for that message.
-Plain pattern-layout logging with `%X{correlationId}` by default — no JSON
-encoder dependency added (easy to swap for `logstash-logback-encoder` later
-if needed).
-
-### Postgres schema (Flyway `V1__init.sql`)
-
-- `idempotency_record(message_key PK, consumer_id, processed_at)`
-- `dead_letter_record(id PK, consumer_id, topic, partition, offset, message_key, payload, exception_class, exception_message, correlation_id, failed_at)`
+*Not yet finalized — see Decision Log, "Tracing across the imperative/reactive
+boundary" for the proposed approach (Reactor Context + automatic context
+propagation), pending final confirmation.*
 
 ## Testing
 
 - **Unit tests**: `ConsumerOrchestrationService` logic against mocked ports.
 - **ArchUnit test**: `HexagonalArchitectureTest`, enforcing the five rules
   above via `layeredArchitecture()`, runs as part of the normal test suite.
-- **Integration tests**: Testcontainers (Postgres + Kafka), full Spring
-  context. Covers: normal processing (idempotency row written), duplicate
-  delivery (second attempt short-circuited by idempotency check), and
-  induced failure (DLT topic message + `dead_letter_record` row written).
-- **Local dev**: `docker-compose.yml` with Postgres + Kafka (KRaft mode, no
+- **Blocking-safety test**: BlockHound wired into the test JVM
+  (`blockhound-junit-platform`) to fail fast if any blocking call occurs on
+  a Reactor-managed thread anywhere in the reactive chain, guarding the
+  single-blocking-point invariant (see Decision Log).
+- **Integration tests**: Testcontainers (Kafka only). Covers: normal
+  processing, and an induced failure (asserting the `.DLT` topic receives
+  the failed record with the original headers intact).
+- **Local dev**: `docker-compose.yml` with Kafka (KRaft mode, no
   Zookeeper).
 
 ## Explicitly out of scope
@@ -171,3 +177,83 @@ if needed).
 - No multi-module Maven split (single module, package-based, per decision).
 - No JSON structured logging by default (left as a documented follow-up).
 - No HTTP-triggered business endpoints beyond the lifecycle-control actuator endpoint.
+- No idempotency store, no persistence layer, no Postgres (see Decision Log).
+
+## Decision Log
+
+Each entry: the decision, why, and the source that grounded it (not just
+asserted from training data — checked against current, dated references).
+
+### Spring Kafka over Reactor Kafka
+
+Reactor Kafka was discontinued by the Reactor team, confirmed directly from
+Spring: [Reactor Kafka Project Will Be Discontinued — spring.io blog, 2025-05-20](https://spring.io/blog/2025/05/20/reactor-kafka-discontinued/).
+That announcement also states the **Reactive template in Spring for Apache
+Kafka is being deprecated and marked for removal** — so the fully-reactive
+Kafka consumption path is being wound down by Spring itself, not merely
+discouraged in third-party opinion. `@KafkaListener` (imperative entry,
+reactive body) is therefore the current supported shape, not a fallback.
+
+### Metrics/logging as an allowed ArchUnit exception
+
+Logging and metrics are textbook cross-cutting concerns — they cut across
+every layer rather than belonging to one, which is why SLF4J and Micrometer
+are built as universal facades rather than domain-specific collaborators:
+[Cross-cutting concern — Wikipedia](https://en.wikipedia.org/wiki/Cross-cutting_concern).
+Practical hexagonal-architecture guidance treats cross-cutting concerns as
+explicitly outside the ports/adapters routing:
+[Hexagonal Architecture with Java and Spring — reflectoring.io](https://reflectoring.io/spring-hexagonal/).
+The applied test: a port should isolate something you'd plausibly swap or
+fake for a *business* reason (a database, a broker, an external API) —
+nobody swaps Micrometer for architectural reasons, and it already ships a
+no-op registry for tests, so wrapping it in a port buys no testability.
+Scoping ArchUnit strictness to real infrastructure seams (Kafka) rather than
+observability facades keeps the rule meaningful instead of teaching people
+to route around it.
+
+### Single blocking bridge point
+
+`.block()` is only safe from a thread Reactor does **not** manage as
+non-blocking (a Kafka consumer poll thread qualifies; a Netty event-loop or
+`Schedulers.parallel()` thread does not — Reactor throws
+`IllegalStateException` if you try there). The rule: block exactly once, at
+the outermost edge (`@KafkaListener` method body), with a bounded timeout;
+every layer inside the composed `Mono` chain (application, `MessageProcessor`)
+stays fully reactive and never blocks itself. BlockHound
+(https://github.com/reactor/BlockHound) is wired into tests to catch any
+accidental blocking call sneaking into the reactive body, turning a silent
+production risk into a failing test.
+
+### Concurrency via Kafka partitions, not Java parallel Streams
+
+Java parallel Streams (`ForkJoinPool.commonPool()`) are for CPU-bound,
+in-memory bulk computation. Kafka consumption + processing is I/O-bound —
+running blocking I/O inside `parallelStream()` doesn't add throughput and
+risks starving the JVM's *shared* common pool used by unrelated code
+elsewhere. The standard, large-scale approach is parallelism via Kafka
+partitions: `@KafkaListener(concurrency = N)` runs N consumer threads, each
+bound to a subset of partitions — this is how Kafka's own consumer-group
+model is designed to scale, not a template-specific choice.
+
+### No idempotency store, no Postgres
+
+Dropped per YAGNI — the user judged a full idempotency-claim mechanism too
+much surface for a template repo, to be added only when a concrete consumer
+actually needs it. Since Postgres's only purpose in this design was
+idempotency + DLT audit, and DLT audit alone doesn't justify a database
+dependency for every consumer built on this template, Postgres/R2DBC/Flyway
+are dropped entirely. The `.DLT` Kafka topic remains the record of failures.
+
+### Tracing across the imperative/reactive boundary (proposed, pending confirmation)
+
+The `@KafkaListener` method is imperative (single thread, MDC is safe
+thread-local state there), but the reactive body it calls into may hop
+threads (e.g. any I/O driver's own event-loop/pool threads), and plain MDC
+does not survive a thread hop. The documented, Spring-team-built approach
+for exactly this shape: push the correlation id into **Reactor `Context`**
+via `.contextWrite(...)` when building the chain (Context travels with the
+subscription, not the thread), and enable
+`Hooks.enableAutomaticContextPropagation()` (backed by
+`io.micrometer:context-propagation`) so Context values are automatically
+bridged into MDC at every thread switch — no manual `MDC.put()` calls
+scattered through reactive code. Source: [Context Propagation with Project Reactor 3 — spring.io blog, 2023-03-30](https://spring.io/blog/2023/03/30/context-propagation-with-project-reactor-3-unified-bridging-between-reactive/).
