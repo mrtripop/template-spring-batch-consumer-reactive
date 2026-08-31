@@ -1,6 +1,7 @@
 package com.template.batchconsumer.adapter.in.kafka;
 
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.template.batchconsumer.application.sample.SampleMessageProcessor;
 import com.template.batchconsumer.application.sample.SamplePayload;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -9,6 +10,8 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,21 +34,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers
 @SpringBootTest
+@DisplayName("Sample consumer end-to-end (real Kafka broker)")
 class SampleConsumerIntegrationTest {
 
-    // This environment's Docker engine (Docker Desktop 4.78.0 / Engine 29.5.3) enforces a minimum
-    // Docker Engine API version of 1.40 (confirmed via `docker version` and raw /vX.Y/info probes:
-    // v1.39 and below get HTTP 400, v1.40+ succeeds). When "api.version" is unset, docker-java (the
-    // client Testcontainers 1.20.1 bundles/shades) defaults to RemoteApiVersion.UNKNOWN_VERSION, an
-    // auto-negotiation placeholder rather than a literal old version number — but this engine
-    // rejects that unnegotiated request outright, so every DockerClientProviderStrategy fails with
-    // "Could not find a valid Docker environment" even though `docker ps`/`docker info` work fine
-    // directly. Pinning it here — before the @Container field below (or anything else in this class)
-    // touches Testcontainers — fixes that without requiring any special flags on the documented
-    // `./mvnw test` invocation. Only set it if not already configured, so this doesn't override a
-    // template adopter's own Docker Engine API version (e.g. an older engine that needs a version
-    // below 1.40): pass -Dapi.version=<your version> (or set the DOCKER_API_VERSION env var, if you
-    // prefer) before running the tests to use a different value instead of this default.
+    private static final String TOPIC = "sample-events";
+    private static final String DLT_TOPIC = "sample-events-dlt";
+
+    // Only set if unset, so this doesn't override a template adopter's own Docker Engine API
+    // version — pass -Dapi.version=<yours> (or DOCKER_API_VERSION) to use a different value.
     static {
         if (System.getProperty("api.version") == null) {
             System.setProperty("api.version", "1.41");
@@ -63,9 +59,6 @@ class SampleConsumerIntegrationTest {
     @Autowired
     private KafkaTemplate<Object, Object> kafkaTemplate;
 
-    // Spring Kafka 4.1.1's KafkaTestUtils has no getConsumer(Map) overload (it was removed from
-    // this version's test-utils surface, unlike what the plan's brief assumed) — so DLT-topic
-    // probe consumers are built directly against the raw Kafka client instead.
     private KafkaConsumer<String, byte[]> newDltConsumer(String groupId) {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
@@ -76,75 +69,9 @@ class SampleConsumerIntegrationTest {
         return new KafkaConsumer<>(props);
     }
 
-    @Test
-    void nonRetryableFailureIsPublishedToDltTopicImmediately() {
-        try (var dltConsumer = newDltConsumer("dlt-test-non-retryable")) {
-            dltConsumer.subscribe(List.of("sample-events-dlt"));
-            seekToTail(dltConsumer);
-
-            kafkaTemplate.send(new ProducerRecord<>(
-                    "sample-events", "key-fatal", new SamplePayload("id-fatal", "FAIL_FATAL")));
-
-            // 25s (not a tighter window) is deliberate: the bulk of this test's elapsed time is
-            // Testcontainers/consumer-group-join startup overhead common to every test in this
-            // class (observed ~12s for this test alone in isolation), not the DLT round-trip
-            // itself, which is fast once the app's listener is actually up. A short window here
-            // would make this test flaky under normal machine load without proving anything more
-            // about "immediacy" than the key check already does; verifying the non-retryable path
-            // skips the retry ladder specifically (rather than just eventually landing in the DLT)
-            // is a separate, more precise assertion left for a future pass.
-            assertThat(pollForKey(dltConsumer, "key-fatal", Duration.ofSeconds(25)))
-                    .as("DLT record with key 'key-fatal' produced by this test's own message")
-                    .isTrue();
-        }
-    }
-
-    @Test
-    void retryableFailureExhaustsRetriesAndLandsInDlt() {
-        try (var dltConsumer = newDltConsumer("dlt-test-retryable")) {
-            dltConsumer.subscribe(List.of("sample-events-dlt"));
-            seekToTail(dltConsumer);
-
-            kafkaTemplate.send(new ProducerRecord<>(
-                    "sample-events", "key-retry", new SamplePayload("id-retry", "FAIL_RETRYABLE")));
-
-            // 4 total deliveries (1 initial + 3 retries) with 1s/2s/4s backoff (application.yml's
-            // consumer.sample.retry.max-attempts: 3) should exhaust well within 20s.
-            assertThat(pollForKey(dltConsumer, "key-retry", Duration.ofSeconds(20)))
-                    .as("DLT record with key 'key-retry' produced by this test's own message")
-                    .isTrue();
-        }
-    }
-
-    @Test
-    void successfulMessageDoesNotReachDltTopic() {
-        try (var dltConsumer = newDltConsumer("dlt-test-success")) {
-            dltConsumer.subscribe(List.of("sample-events-dlt"));
-
-            // The @Container broker is a single static field shared by all three @Test methods in
-            // this class, and JUnit 5 does not guarantee method execution order — so if the
-            // retryable/non-retryable tests happen to run first, they leave real DLT records on
-            // this topic. A brand-new "earliest" consumer group would otherwise read those leftover
-            // records and produce a false positive here. Seeking to the current tail first scopes
-            // the assertion to records produced by *this* test's message, matching what the test
-            // actually intends to verify.
-            seekToTail(dltConsumer);
-
-            kafkaTemplate.send(new ProducerRecord<>(
-                    "sample-events", "key-ok", new SamplePayload("id-ok", "hello")));
-
-            var records = dltConsumer.poll(Duration.ofSeconds(5));
-            assertThat(records.count()).isZero();
-        }
-    }
-
-    // Seeks a freshly-subscribed DLT consumer to the current end of its assigned partitions,
-    // so subsequent polls only surface records produced *after* this call — i.e. records this
-    // test's own message actually produced, not leftovers from another @Test method that ran
-    // first on the shared, class-scoped Kafka broker (JUnit 5 does not guarantee method order).
-    // Partition assignment only completes once the group rebalance finishes, so poll in a loop
-    // until it does rather than a single fixed-delay poll (which can race ahead of assignment
-    // and silently seek nothing).
+    // Seeks to the current tail so a fresh "earliest" consumer group only sees records this
+    // test's own message produces, not leftovers from another @Test method (JUnit doesn't
+    // guarantee method order, and @Container is one broker shared by every test here).
     private void seekToTail(KafkaConsumer<String, byte[]> consumer) {
         long assignmentDeadline = System.currentTimeMillis() + Duration.ofSeconds(10).toMillis();
         while (consumer.assignment().isEmpty() && System.currentTimeMillis() < assignmentDeadline) {
@@ -154,18 +81,13 @@ class SampleConsumerIntegrationTest {
         consumer.seekToEnd(consumer.assignment());
     }
 
-    // Polls the DLT topic until a record whose key equals `expectedKey` shows up, or the given
-    // timeout elapses. Checking the key (not just "some record arrived") closes the remaining gap
-    // even after seekToTail: two DLT tests each expecting >= 1 record could otherwise both pass
-    // by reading each other's record if seek/timing ever lined up unexpectedly, and — for the
-    // "immediately" test specifically — a record with the wrong key can't be mistaken for this
-    // test's own message, which is what makes that test actually exercise "this message's fatal
-    // exception skipped retries," not just "some DLT record showed up within 15s."
+    // Polls until a record with the given key shows up, or the timeout elapses. Checking the key
+    // (not just "some record arrived") ensures each test only counts its own message.
     private boolean pollForKey(KafkaConsumer<String, byte[]> consumer, String expectedKey, Duration timeout) {
         long deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
             ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofSeconds(1));
-            for (ConsumerRecord<String, byte[]> record : records.records("sample-events-dlt")) {
+            for (ConsumerRecord<String, byte[]> record : records.records(DLT_TOPIC)) {
                 if (expectedKey.equals(record.key())) {
                     return true;
                 }
@@ -174,28 +96,85 @@ class SampleConsumerIntegrationTest {
         return false;
     }
 
-    // The brief specifies `org.testcontainers.kafka.KafkaContainer` (Testcontainers 1.20.1's class
-    // dedicated to the official apache/kafka native image — the OTHER Kafka class in this version,
-    // org.testcontainers.containers.KafkaContainer, is hard-pinned to Confluent Platform image
-    // versioning and outright rejects "apache/kafka:3.9.0" as an unsupported CP version string).
-    //
-    // That class's import and constructor resolve exactly as the brief wrote them, but starting the
-    // container with it reproducibly fails in this environment: Kafka's own KRaft bootstrap crashes
-    // with "advertised.listeners cannot use the nonroutable meta-address 0.0.0.0". Root-caused by
-    // hand-running apache/kafka:3.9.0's entrypoint with the exact env vars that class generates: its
-    // dynamically-computed KAFKA_ADVERTISED_LISTENERS includes PLAINTEXT and BROKER but omits a
-    // CONTROLLER entry entirely. For a single-node combined broker+controller KRaft node, Kafka
-    // 3.9.0 requires every listener named in controller.listener.names to also have an advertised
-    // entry — if it's missing, it silently falls back to the raw (0.0.0.0) bind address from
-    // `listeners` and then fails its own routability validation. Confirmed by manually re-running
-    // the container with an explicit CONTROLLER entry added to KAFKA_ADVERTISED_LISTENERS: it boots
-    // cleanly. This looks like a genuine gap in Testcontainers 1.20.1's apache/kafka wiring for
-    // combined-mode KRaft, not anything introduced by this project's Tasks 6-10.
-    //
-    // This minimal GenericContainer subclass mirrors that library class's approach (wait for a
-    // startup script to appear, then export the real KAFKA_ADVERTISED_LISTENERS once the mapped
-    // host port is known, then hand off to the image's own /etc/kafka/docker/run) but adds the
-    // missing CONTROLLER entry, which is the one-line fix that makes it work.
+    @Nested
+    @DisplayName("a non-retryable failure")
+    class NonRetryableFailure {
+
+        @Test
+        @DisplayName("is published to the DLT topic")
+        void nonRetryableFailureIsPublishedToDltTopicImmediately() {
+            // Arrange
+            String key = "key-fatal";
+            try (var dltConsumer = newDltConsumer("dlt-test-non-retryable")) {
+                dltConsumer.subscribe(List.of(DLT_TOPIC));
+                seekToTail(dltConsumer);
+
+                // Act
+                kafkaTemplate.send(new ProducerRecord<>(
+                        TOPIC, key, new SamplePayload("id-fatal", SampleMessageProcessor.NON_RETRYABLE_TRIGGER)));
+
+                // Assert — 45s: the bulk of this test's elapsed time is Testcontainers/consumer-group
+                // startup overhead common to every test in this class (observed up to ~28s under
+                // machine load), not the DLT round-trip itself.
+                assertThat(pollForKey(dltConsumer, key, Duration.ofSeconds(45)))
+                        .as("DLT record with key '%s' produced by this test's own message", key)
+                        .isTrue();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("a retryable failure")
+    class RetryableFailure {
+
+        @Test
+        @DisplayName("exhausts retries and lands in the DLT")
+        void retryableFailureExhaustsRetriesAndLandsInDlt() {
+            // Arrange
+            String key = "key-retry";
+            try (var dltConsumer = newDltConsumer("dlt-test-retryable")) {
+                dltConsumer.subscribe(List.of(DLT_TOPIC));
+                seekToTail(dltConsumer);
+
+                // Act
+                kafkaTemplate.send(new ProducerRecord<>(
+                        TOPIC, key, new SamplePayload("id-retry", SampleMessageProcessor.RETRYABLE_TRIGGER)));
+
+                // Assert — 4 total deliveries (1 initial + 3 retries) with 1s/2s/4s backoff
+                // (application.yml's consumer.sample.retry.max-attempts: 3) exhaust well within 20s.
+                assertThat(pollForKey(dltConsumer, key, Duration.ofSeconds(20)))
+                        .as("DLT record with key '%s' produced by this test's own message", key)
+                        .isTrue();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("a successful message")
+    class SuccessfulMessage {
+
+        @Test
+        @DisplayName("never reaches the DLT topic")
+        void successfulMessageDoesNotReachDltTopic() {
+            // Arrange
+            try (var dltConsumer = newDltConsumer("dlt-test-success")) {
+                dltConsumer.subscribe(List.of(DLT_TOPIC));
+                seekToTail(dltConsumer);
+
+                // Act
+                kafkaTemplate.send(new ProducerRecord<>(TOPIC, "key-ok", new SamplePayload("id-ok", "hello")));
+
+                // Assert
+                var records = dltConsumer.poll(Duration.ofSeconds(5));
+                assertThat(records.count()).isZero();
+            }
+        }
+    }
+
+    // org.testcontainers.kafka.KafkaContainer's generated KAFKA_ADVERTISED_LISTENERS omits a
+    // CONTROLLER entry, which crashes apache/kafka:3.9.0's combined-mode KRaft bootstrap
+    // ("advertised.listeners cannot use the nonroutable meta-address 0.0.0.0"). This subclass
+    // mirrors that class's wait-for-script approach but adds the missing CONTROLLER entry.
     private static final class KafkaTestContainer extends GenericContainer<KafkaTestContainer> {
 
         private static final int KAFKA_PORT = 9092;
@@ -223,9 +202,7 @@ class SampleConsumerIntegrationTest {
 
         @Override
         protected void containerIsStarting(InspectContainerResponse containerInfo) {
-            // Advertise CONTROLLER alongside PLAINTEXT (unlike Testcontainers' own
-            // org.testcontainers.kafka.KafkaContainer, which only advertises PLAINTEXT/BROKER —
-            // see the class-level comment above for why that omission crashes this image/version).
+            // Advertise CONTROLLER alongside PLAINTEXT — see the class-level comment above.
             String advertisedListeners = "PLAINTEXT://" + getHost() + ":" + getMappedPort(KAFKA_PORT)
                     + ",CONTROLLER://localhost:" + CONTROLLER_PORT;
             String script = "#!/bin/bash\n"
