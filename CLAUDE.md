@@ -9,11 +9,18 @@ behavioral test correctness** — not code style, test structure, or hardcoded
 literals. Claude owns mechanical conformance completely and self-checks it
 *before* asking for review, not after being told about it in a comment.
 
-Concretely, before declaring any task, PR, or plan phase done:
+Concretely, before declaring any task, PR, or plan phase done — as an actual
+step you execute, not a stated intention. (First attempt at this rule
+skipped straight from implementing to running tests to pushing, on both a
+9-comment and a 3-comment fix round, without the self-review step below
+ever actually running — writing the rule down did not make it happen.)
 
-1. **Self-invoke `/code-review` on your own diff.** Don't wait for the human
-   to manually read the code and type out style comments — run the review
-   yourself first and fix what it finds.
+1. **Self-invoke `/code-review` on your own diff, or at minimum grep the
+   diff yourself for repeated literals.** For every test method you wrote or
+   touched, check: does any value asserted on also appear, re-typed, in that
+   method's Arrange/Act instead of referenced from a variable or constant?
+   That single check catches most of what a human reviewer would otherwise
+   have to type out by hand.
 2. **Check for path-scoped, non-invocable skills relevant to the files you
    touched**, not just what shows up in the invokable-skills listing. This
    project has at least one (`software-engineer-plugin`'s `testing-standards`,
