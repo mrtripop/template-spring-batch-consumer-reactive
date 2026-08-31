@@ -1,5 +1,6 @@
 package com.template.batchconsumer.config;
 
+import com.template.batchconsumer.application.metrics.MetricNames;
 import com.template.batchconsumer.application.sample.SamplePayload;
 import com.template.batchconsumer.domain.exception.NonRetryableProcessingException;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -28,11 +29,7 @@ import org.springframework.util.backoff.ExponentialBackOff;
 import java.util.HashMap;
 import java.util.Map;
 
-// @EnableKafka: in this environment's resolved Spring Boot version, spring-boot-autoconfigure
-// ships no Kafka autoconfiguration at all (the project depends on the bare spring-kafka
-// artifact rather than a Boot Kafka starter), so annotation-driven @KafkaListener processing —
-// and the KafkaListenerEndpointRegistry that KafkaListenerLifecycleAdapter depends on — must be
-// enabled explicitly here rather than relying on Boot to wire it in automatically.
+// This project has no Boot Kafka starter, so @KafkaListener processing needs enabling explicitly.
 @EnableKafka
 @Configuration
 public class KafkaConsumerConfig {
@@ -49,14 +46,8 @@ public class KafkaConsumerConfig {
         JacksonJsonDeserializer<SamplePayload> valueDeserializer = new JacksonJsonDeserializer<>(SamplePayload.class);
         valueDeserializer.addTrustedPackages(SamplePayload.class.getPackageName());
 
-        // ErrorHandlingDeserializer wraps the Jackson deserializer so a record whose value isn't
-        // valid SamplePayload JSON (the classic Kafka "poison pill") doesn't throw out of
-        // Consumer.poll() itself, which would happen BEFORE any listener invocation and would
-        // wedge the consumer forever (offset never advances, DefaultErrorHandler/
-        // DeadLetterPublishingRecoverer never sees it — that path only runs for exceptions thrown
-        // from the listener, not from deserialization). Instead the failure is captured as a null
-        // value plus a DeserializationException header on the record, which then flows through
-        // the normal @KafkaListener -> DefaultErrorHandler -> DLT path like any other failure.
+        // Wraps the Jackson deserializer so a malformed ("poison pill") record surfaces through
+        // the normal error-handler/DLT path instead of wedging the consumer on that offset.
         ErrorHandlingDeserializer<SamplePayload> errorHandlingValueDeserializer =
                 new ErrorHandlingDeserializer<>(valueDeserializer);
 
@@ -74,10 +65,8 @@ public class KafkaConsumerConfig {
         return factory;
     }
 
-    // ProducerFactory/KafkaTemplate: in this environment's resolved Spring Boot version, Boot's
-    // Kafka autoconfiguration (which would normally supply a default KafkaTemplate<Object,
-    // Object> bean from spring.kafka.* properties) does not exist at all, so the DLT-publishing
-    // template used by kafkaErrorHandler below must be wired here instead.
+    // No Boot Kafka autoconfiguration in this project, so the DLT-publishing template used by
+    // kafkaErrorHandler below is wired manually.
     @Bean
     public ProducerFactory<Object, Object> kafkaProducerFactory(
             @Value("${spring.kafka.bootstrap-servers}") String bootstrapServers) {
@@ -93,12 +82,8 @@ public class KafkaConsumerConfig {
         return new KafkaTemplate<>(kafkaProducerFactory);
     }
 
-    // NOTE: this error handler's retry/DLT metrics (consumer.messages.retried,
-    // consumer.messages.dlt) are tagged with the single injected consumer.sample.id. If a real
-    // adopter of this template adds a second @KafkaListener sharing this same error-handler bean,
-    // that second consumer's retry/DLT events would be mislabeled under this consumer's id —
-    // each additional consumer needs its own kafkaErrorHandler-style bean parameterized with its
-    // own id (mirroring sampleConsumerFactory's per-consumer bean pattern above).
+    // Retry/DLT metrics are tagged with this bean's own consumerId — a second @KafkaListener
+    // needs its own kafkaErrorHandler-style bean, or its events get mislabeled under this one.
     @Bean
     public DefaultErrorHandler kafkaErrorHandler(
             KafkaTemplate<Object, Object> kafkaTemplate,
@@ -117,14 +102,14 @@ public class KafkaConsumerConfig {
 
         DeadLetterPublishingRecoverer dltRecoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
         ConsumerRecordRecoverer countingRecoverer = (record, exception) -> {
-            meterRegistry.counter("consumer.messages.dlt", "consumer", consumerId).increment();
+            meterRegistry.counter(MetricNames.MESSAGES_DLT, MetricNames.TAG_CONSUMER, consumerId).increment();
             dltRecoverer.accept(record, exception);
         };
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(countingRecoverer, backOff);
         errorHandler.addNotRetryableExceptions(NonRetryableProcessingException.class);
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
-                meterRegistry.counter("consumer.messages.retried", "consumer", consumerId).increment());
+                meterRegistry.counter(MetricNames.MESSAGES_RETRIED, MetricNames.TAG_CONSUMER, consumerId).increment());
         return errorHandler;
     }
 }

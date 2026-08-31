@@ -19,16 +19,17 @@ import java.time.Duration;
 @Component
 public class SampleKafkaListenerAdapter {
 
-    private static final Duration BLOCK_TIMEOUT = Duration.ofSeconds(30);
-
     private final ConsumeMessageUseCase<SamplePayload> consumeMessageUseCase;
     private final String consumerId;
+    private final Duration blockTimeout;
 
     public SampleKafkaListenerAdapter(
             ConsumeMessageUseCase<SamplePayload> consumeMessageUseCase,
-            @Value("${consumer.sample.id}") String consumerId) {
+            @Value("${consumer.sample.id}") String consumerId,
+            @Value("${consumer.sample.block-timeout-ms:30000}") long blockTimeoutMs) {
         this.consumeMessageUseCase = consumeMessageUseCase;
         this.consumerId = consumerId;
+        this.blockTimeout = Duration.ofMillis(blockTimeoutMs);
     }
 
     @KafkaListener(
@@ -37,9 +38,8 @@ public class SampleKafkaListenerAdapter {
             concurrency = "${consumer.sample.concurrency}",
             containerFactory = "sampleKafkaListenerContainerFactory")
     public void onMessage(ConsumerRecord<String, SamplePayload> record) {
-        // Single, outermost blocking bridge point (spec Decision Log #3) — everything
-        // consumeMessageUseCase.consume(...) does stays reactive; this is the only .block().
-        consumeMessageUseCase.consume(toEnvelope(record)).block(BLOCK_TIMEOUT);
+        // Single, outermost blocking bridge point (spec Decision Log #3).
+        consumeMessageUseCase.consume(toEnvelope(record)).block(blockTimeout);
     }
 
     MessageEnvelope<SamplePayload> toEnvelope(ConsumerRecord<String, SamplePayload> record) {

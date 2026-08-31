@@ -32,21 +32,9 @@ public class ApplicationConfig {
                 consumerId, new SampleMessageProcessor(), meterRegistry, consumerLifecycleControlPort);
     }
 
-    // @Primary: ConsumerOrchestrationService implements both ConsumeMessageUseCase and
-    // ConsumerLifecycleUseCase directly, so it is itself an autowire candidate for either
-    // interface. Without @Primary here, any injection point that autowires by interface type
-    // alone (e.g. SampleKafkaListenerAdapter's ConsumeMessageUseCase<SamplePayload> constructor
-    // parameter, whose parameter name doesn't match either bean name) is ambiguous between the
-    // orchestration service bean and this narrower port-typed alias.
-    //
-    // Only ONE of the two port-typed alias beans below is marked @Primary. Both ultimately
-    // return the very same singleton instance, so once that instance is created, Spring type-
-    // matches it as a candidate under any of its three bean names for either interface. Marking
-    // both @Primary therefore creates a *second* ambiguity ("more than one primary bean found")
-    // for whichever interface type they both satisfy. With a single @Primary bean, it resolves
-    // unambiguously for both ConsumeMessageUseCase and ConsumerLifecycleUseCase injection points;
-    // consumerLifecycleUseCase below still resolves correctly for its own consumer
-    // (ConsumerLifecycleEndpoint) via that bean's own name-matching parameter.
+    // @Primary breaks a real ambiguity: ConsumerOrchestrationService implements both use-case
+    // interfaces directly, so it's also an autowire candidate here. Only this alias needs it —
+    // consumerLifecycleUseCase below resolves by name-match instead.
     @Bean
     @Primary
     public ConsumeMessageUseCase<SamplePayload> sampleConsumeMessageUseCase(

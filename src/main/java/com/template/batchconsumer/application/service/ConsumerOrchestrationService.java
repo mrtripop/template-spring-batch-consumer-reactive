@@ -1,5 +1,6 @@
 package com.template.batchconsumer.application.service;
 
+import com.template.batchconsumer.application.metrics.MetricNames;
 import com.template.batchconsumer.application.port.in.ConsumeMessageUseCase;
 import com.template.batchconsumer.application.port.in.ConsumerLifecycleUseCase;
 import com.template.batchconsumer.application.port.in.MessageProcessor;
@@ -40,24 +41,21 @@ public class ConsumerOrchestrationService<T> implements ConsumeMessageUseCase<T>
                 .doOnError(error -> recordErrorOutcome(error, sample));
     }
 
-    // NOTE: consumer.messages.processed counts DELIVERY ATTEMPTS, not unique messages — Spring
-    // Kafka's DefaultErrorHandler redelivers a retryable failure to this same consume() call on
-    // each retry, so a single message that fails, retries twice, then lands in the DLT increments
-    // this counter multiple times (once per attempt) before it's ever counted as a success or
-    // exhausted. Don't read it as "number of distinct messages processed."
+    // Counts delivery attempts, not unique messages — a retried-then-DLT'd message increments
+    // this once per attempt, not once overall.
     private void recordSuccessOutcome(ProcessingOutcome outcome, Timer.Sample sample) {
-        meterRegistry.counter("consumer.messages.processed", "consumer", consumerId, "outcome", outcome.name())
+        meterRegistry.counter(MetricNames.MESSAGES_PROCESSED, MetricNames.TAG_CONSUMER, consumerId, MetricNames.TAG_OUTCOME, outcome.name())
                 .increment();
-        sample.stop(meterRegistry.timer("consumer.processing.duration", "consumer", consumerId));
+        sample.stop(meterRegistry.timer(MetricNames.PROCESSING_DURATION, MetricNames.TAG_CONSUMER, consumerId));
     }
 
     private void recordErrorOutcome(Throwable error, Timer.Sample sample) {
         ProcessingOutcome outcome = error instanceof NonRetryableProcessingException
                 ? ProcessingOutcome.NON_RETRYABLE_FAILURE
                 : ProcessingOutcome.RETRYABLE_FAILURE;
-        meterRegistry.counter("consumer.messages.processed", "consumer", consumerId, "outcome", outcome.name())
+        meterRegistry.counter(MetricNames.MESSAGES_PROCESSED, MetricNames.TAG_CONSUMER, consumerId, MetricNames.TAG_OUTCOME, outcome.name())
                 .increment();
-        sample.stop(meterRegistry.timer("consumer.processing.duration", "consumer", consumerId));
+        sample.stop(meterRegistry.timer(MetricNames.PROCESSING_DURATION, MetricNames.TAG_CONSUMER, consumerId));
     }
 
     @Override

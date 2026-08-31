@@ -1,5 +1,6 @@
 package com.template.batchconsumer.architecture;
 
+import com.template.batchconsumer.Application;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -11,7 +12,9 @@ import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
 
 class HexagonalArchitectureTest {
 
-    private static final String BASE_PACKAGE = "com.template.batchconsumer";
+    // Derived from Application's actual package (not a literal) so a package rename can't
+    // silently desync this test from reality.
+    private static final String BASE_PACKAGE = Application.class.getPackageName();
 
     private final JavaClasses classes = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)

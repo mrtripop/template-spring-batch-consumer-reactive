@@ -25,10 +25,7 @@ public class ConsumerLifecycleEndpoint {
         return consumerLifecycleUseCase.statuses();
     }
 
-    // Translates NoSuchElementException (thrown by KafkaListenerLifecycleAdapter.containerFor
-    // when the id doesn't match any registered listener container) to HTTP 404 here, at the
-    // adapter.in.web boundary — the appropriate place for HTTP-status translation, so that
-    // adapter.out.kafka can stay Spring-Kafka-specific rather than growing a web-layer concern.
+    // Unknown consumer id -> 404, not a raw 500.
     @ReadOperation
     public WebEndpointResponse<ConsumerStatus> status(@Selector String consumerId) {
         try {
@@ -38,8 +35,7 @@ public class ConsumerLifecycleEndpoint {
         }
     }
 
-    // See the note on status(String) above: same 404 translation for the write path so a
-    // typo'd/unknown consumer id reads as "not found" rather than a generic 500 server error.
+    // Same 404 translation as status(String) above.
     @WriteOperation
     public WebEndpointResponse<Void> applyAction(@Selector String consumerId, @Selector Action action) {
         try {
