@@ -9,7 +9,6 @@ import com.template.batchconsumer.application.sample.SamplePayload;
 import com.template.batchconsumer.application.service.ConsumerOrchestrationService;
 import com.template.batchconsumer.adapter.in.web.ConsumerLifecycleEndpoint;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -25,11 +24,11 @@ public class ApplicationConfig {
 
     @Bean
     public ConsumerOrchestrationService<SamplePayload> sampleConsumerOrchestrationService(
-            @Value("${consumer.sample.id}") String consumerId,
+            SampleConsumerProperties properties,
             MeterRegistry meterRegistry,
             ConsumerLifecycleControlPort consumerLifecycleControlPort) {
         return new ConsumerOrchestrationService<>(
-                consumerId, new SampleMessageProcessor(), meterRegistry, consumerLifecycleControlPort);
+                properties.id(), new SampleMessageProcessor(), meterRegistry, consumerLifecycleControlPort);
     }
 
     // @Primary breaks a real ambiguity: ConsumerOrchestrationService implements both use-case

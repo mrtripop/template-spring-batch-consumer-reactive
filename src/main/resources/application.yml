@@ -10,6 +10,7 @@ consumer:
     topic: sample-events
     concurrency: 3
     block-timeout-ms: 30000
+    auto-offset-reset: earliest
     retry:
       # max-attempts counts RETRIES after the first delivery attempt, not total attempts — 3
       # here means 4 total deliveries (1 initial + 3 retries) before a message is sent to the DLT.

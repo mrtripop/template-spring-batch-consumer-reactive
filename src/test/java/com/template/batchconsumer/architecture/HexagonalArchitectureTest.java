@@ -5,30 +5,42 @@ import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
 
+@DisplayName("Hexagonal architecture boundaries")
 class HexagonalArchitectureTest {
 
     // Derived from Application's actual package (not a literal) so a package rename can't
     // silently desync this test from reality.
     private static final String BASE_PACKAGE = Application.class.getPackageName();
 
+    // Each layer's package suffix is defined once here and reused across every rule below —
+    // a package rename only needs updating in one place instead of every rule that mentions it.
+    private static final String DOMAIN_PACKAGE = BASE_PACKAGE + ".domain";
+    private static final String APPLICATION_PACKAGE = BASE_PACKAGE + ".application";
+    private static final String ADAPTER_IN_PACKAGE = BASE_PACKAGE + ".adapter.in";
+    private static final String ADAPTER_OUT_PACKAGE = BASE_PACKAGE + ".adapter.out";
+    private static final String CONFIG_PACKAGE = BASE_PACKAGE + ".config";
+
     private final JavaClasses classes = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
             .importPackages(BASE_PACKAGE);
 
     @Test
+    @DisplayName("layers only depend in the allowed direction")
     void hexagonalLayersRespectDependencyDirection() {
+        // Arrange & Act
         ArchRule rule = layeredArchitecture()
                 .consideringOnlyDependenciesInLayers()
-                .layer("Domain").definedBy(BASE_PACKAGE + ".domain..")
-                .layer("Application").definedBy(BASE_PACKAGE + ".application..")
-                .layer("AdapterIn").definedBy(BASE_PACKAGE + ".adapter.in..")
-                .layer("AdapterOut").definedBy(BASE_PACKAGE + ".adapter.out..")
-                .layer("Config").definedBy(BASE_PACKAGE + ".config..")
+                .layer("Domain").definedBy(DOMAIN_PACKAGE + "..")
+                .layer("Application").definedBy(APPLICATION_PACKAGE + "..")
+                .layer("AdapterIn").definedBy(ADAPTER_IN_PACKAGE + "..")
+                .layer("AdapterOut").definedBy(ADAPTER_OUT_PACKAGE + "..")
+                .layer("Config").definedBy(CONFIG_PACKAGE + "..")
 
                 .whereLayer("Domain").mayOnlyBeAccessedByLayers("Application", "AdapterIn", "AdapterOut", "Config")
                 .whereLayer("Application").mayOnlyBeAccessedByLayers("AdapterIn", "AdapterOut", "Config")
@@ -37,13 +49,16 @@ class HexagonalArchitectureTest {
                 .whereLayer("Config").mayNotBeAccessedByAnyLayer()
                 .allowEmptyShould(true);
 
+        // Assert
         rule.check(classes);
     }
 
     @Test
+    @DisplayName("application stays framework-agnostic except observability facades")
     void applicationDependsOnlyOnDomainAndObservabilityFacades() {
+        // Arrange & Act
         ArchRule rule = noClasses()
-                .that().resideInAPackage(BASE_PACKAGE + ".application..")
+                .that().resideInAPackage(APPLICATION_PACKAGE + "..")
                 .should().dependOnClassesThat()
                 .resideInAnyPackage("org.springframework..", "org.apache.kafka..", "io.r2dbc..", "reactor.kafka..")
                 .because("application must stay framework-agnostic except for cross-cutting "
@@ -51,19 +66,23 @@ class HexagonalArchitectureTest {
                         + "and Reactor Kafka are explicitly kept out")
                 .allowEmptyShould(true);
 
+        // Assert
         rule.check(classes);
     }
 
     @Test
+    @DisplayName("adapter.in never bypasses ports to reach adapter.out directly")
     void adapterInDoesNotDependOnAdapterOutDirectly() {
+        // Arrange & Act
         ArchRule rule = noClasses()
-                .that().resideInAPackage(BASE_PACKAGE + ".adapter.in..")
+                .that().resideInAPackage(ADAPTER_IN_PACKAGE + "..")
                 .should().dependOnClassesThat()
-                .resideInAPackage(BASE_PACKAGE + ".adapter.out..")
+                .resideInAPackage(ADAPTER_OUT_PACKAGE + "..")
                 .because("adapter.in must reach adapter.out functionality only through "
                         + "application.port.out interfaces")
                 .allowEmptyShould(true);
 
+        // Assert
         rule.check(classes);
     }
 }

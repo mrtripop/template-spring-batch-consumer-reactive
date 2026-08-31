@@ -1,6 +1,7 @@
 package com.template.batchconsumer.adapter.out.kafka;
 
 import com.template.batchconsumer.domain.model.ConsumerStatus;
+import com.template.batchconsumer.fixture.SampleFixture;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -27,35 +28,35 @@ class KafkaListenerLifecycleAdapterTest {
     void setUp() {
         registry = Mockito.mock(KafkaListenerEndpointRegistry.class);
         container = Mockito.mock(MessageListenerContainer.class);
-        when(registry.getListenerContainer("sample-consumer")).thenReturn(container);
+        when(registry.getListenerContainer(SampleFixture.CONSUMER_ID)).thenReturn(container);
         adapter = new KafkaListenerLifecycleAdapter(registry);
     }
 
     @Test
     @DisplayName("start delegates to the underlying container")
     void startDelegatesToContainer() {
-        adapter.start("sample-consumer");
+        adapter.start(SampleFixture.CONSUMER_ID);
         verify(container).start();
     }
 
     @Test
     @DisplayName("stop delegates to the underlying container")
     void stopDelegatesToContainer() {
-        adapter.stop("sample-consumer");
+        adapter.stop(SampleFixture.CONSUMER_ID);
         verify(container).stop();
     }
 
     @Test
     @DisplayName("pause delegates to the underlying container")
     void pauseDelegatesToContainer() {
-        adapter.pause("sample-consumer");
+        adapter.pause(SampleFixture.CONSUMER_ID);
         verify(container).pause();
     }
 
     @Test
     @DisplayName("resume delegates to the underlying container")
     void resumeDelegatesToContainer() {
-        adapter.resume("sample-consumer");
+        adapter.resume(SampleFixture.CONSUMER_ID);
         verify(container).resume();
     }
 
@@ -65,9 +66,9 @@ class KafkaListenerLifecycleAdapterTest {
         when(container.isRunning()).thenReturn(true);
         when(container.isContainerPaused()).thenReturn(false);
 
-        var status = adapter.status("sample-consumer");
+        var status = adapter.status(SampleFixture.CONSUMER_ID);
 
-        assertThat(status.consumerId()).isEqualTo("sample-consumer");
+        assertThat(status.consumerId()).isEqualTo(SampleFixture.CONSUMER_ID);
         assertThat(status.state()).isEqualTo(ConsumerStatus.State.RUNNING);
     }
 
@@ -77,7 +78,7 @@ class KafkaListenerLifecycleAdapterTest {
         when(container.isRunning()).thenReturn(true);
         when(container.isContainerPaused()).thenReturn(true);
 
-        assertThat(adapter.status("sample-consumer").state()).isEqualTo(ConsumerStatus.State.PAUSED);
+        assertThat(adapter.status(SampleFixture.CONSUMER_ID).state()).isEqualTo(ConsumerStatus.State.PAUSED);
     }
 
     @Test
@@ -85,26 +86,26 @@ class KafkaListenerLifecycleAdapterTest {
     void statusReflectsStoppedContainer() {
         when(container.isRunning()).thenReturn(false);
 
-        assertThat(adapter.status("sample-consumer").state()).isEqualTo(ConsumerStatus.State.STOPPED);
+        assertThat(adapter.status(SampleFixture.CONSUMER_ID).state()).isEqualTo(ConsumerStatus.State.STOPPED);
     }
 
     @Test
     @DisplayName("status throws for an unknown consumer id")
     void statusThrowsForUnknownConsumerId() {
-        assertThatThrownBy(() -> adapter.status("missing-consumer"))
+        assertThatThrownBy(() -> adapter.status(SampleFixture.UNKNOWN_CONSUMER_ID))
                 .isInstanceOf(NoSuchElementException.class);
     }
 
     @Test
     @DisplayName("statuses lists every registered container")
     void statusesListsAllRegisteredContainers() {
-        when(registry.getListenerContainerIds()).thenReturn(Set.of("sample-consumer"));
+        when(registry.getListenerContainerIds()).thenReturn(Set.of(SampleFixture.CONSUMER_ID));
         when(container.isRunning()).thenReturn(true);
         when(container.isContainerPaused()).thenReturn(false);
 
         var statuses = adapter.statuses();
 
         assertThat(statuses).hasSize(1);
-        assertThat(statuses.get(0).consumerId()).isEqualTo("sample-consumer");
+        assertThat(statuses.get(0).consumerId()).isEqualTo(SampleFixture.CONSUMER_ID);
     }
 }

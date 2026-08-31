@@ -1,6 +1,7 @@
 package com.template.batchconsumer.config;
 
 import com.template.batchconsumer.application.metrics.MetricNames;
+import com.template.batchconsumer.fixture.SampleFixture;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -25,7 +26,7 @@ class KafkaConsumerConfigTest {
     void sampleConsumerFactoryWrapsValueDeserializerForPoisonPillSafety() {
         // Act
         ConsumerFactory<String, ?> consumerFactory =
-                config.sampleConsumerFactory("localhost:9092", "sample-consumer");
+                config.sampleConsumerFactory("localhost:9092", SampleFixture.consumerProperties());
 
         // Assert
         assertThat(consumerFactory.getValueDeserializer()).isInstanceOf(ErrorHandlingDeserializer.class);
@@ -40,9 +41,9 @@ class KafkaConsumerConfigTest {
         // Arrange
         KafkaTemplate<Object, Object> kafkaTemplate = mock(KafkaTemplate.class);
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
-        DefaultErrorHandler errorHandler = config.kafkaErrorHandler(
-                kafkaTemplate, meterRegistry, "sample-consumer", 3, 1000L, 2.0, 10000L);
-        ConsumerRecord<Object, Object> record = new ConsumerRecord<>("sample-events", 0, 0L, "key", "value");
+        DefaultErrorHandler errorHandler =
+                config.kafkaErrorHandler(kafkaTemplate, meterRegistry, SampleFixture.consumerProperties());
+        ConsumerRecord<Object, Object> record = new ConsumerRecord<>(SampleFixture.TOPIC, 0, 0L, "key", "value");
         Consumer<?, ?> consumer = mock(Consumer.class);
         MessageListenerContainer container = mock(MessageListenerContainer.class);
 
@@ -50,7 +51,7 @@ class KafkaConsumerConfigTest {
         errorHandler.handleOne(new RuntimeException("boom"), record, consumer, container);
 
         // Assert
-        assertThat(meterRegistry.counter(MetricNames.MESSAGES_RETRIED, MetricNames.TAG_CONSUMER, "sample-consumer").count())
+        assertThat(meterRegistry.counter(MetricNames.MESSAGES_RETRIED, MetricNames.TAG_CONSUMER, SampleFixture.CONSUMER_ID).count())
                 .isEqualTo(1.0);
     }
 }

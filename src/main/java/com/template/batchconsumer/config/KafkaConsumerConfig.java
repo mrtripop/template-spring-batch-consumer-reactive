@@ -9,6 +9,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafka;
@@ -31,17 +32,18 @@ import java.util.Map;
 
 // This project has no Boot Kafka starter, so @KafkaListener processing needs enabling explicitly.
 @EnableKafka
+@EnableConfigurationProperties(SampleConsumerProperties.class)
 @Configuration
 public class KafkaConsumerConfig {
 
     @Bean
     public ConsumerFactory<String, SamplePayload> sampleConsumerFactory(
             @Value("${spring.kafka.bootstrap-servers}") String bootstrapServers,
-            @Value("${consumer.sample.id}") String groupId) {
+            SampleConsumerProperties properties) {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, properties.id());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, properties.autoOffsetReset());
 
         JacksonJsonDeserializer<SamplePayload> valueDeserializer = new JacksonJsonDeserializer<>(SamplePayload.class);
         valueDeserializer.addTrustedPackages(SamplePayload.class.getPackageName());
@@ -88,18 +90,16 @@ public class KafkaConsumerConfig {
     public DefaultErrorHandler kafkaErrorHandler(
             KafkaTemplate<Object, Object> kafkaTemplate,
             MeterRegistry meterRegistry,
-            @Value("${consumer.sample.id}") String consumerId,
-            @Value("${consumer.sample.retry.max-attempts}") int maxAttempts,
-            @Value("${consumer.sample.retry.initial-interval-ms}") long initialIntervalMs,
-            @Value("${consumer.sample.retry.multiplier}") double multiplier,
-            @Value("${consumer.sample.retry.max-interval-ms}") long maxIntervalMs) {
+            SampleConsumerProperties properties) {
 
+        SampleConsumerProperties.Retry retry = properties.retry();
         ExponentialBackOff backOff = new ExponentialBackOff();
-        backOff.setMaxAttempts(maxAttempts);
-        backOff.setInitialInterval(initialIntervalMs);
-        backOff.setMultiplier(multiplier);
-        backOff.setMaxInterval(maxIntervalMs);
+        backOff.setMaxAttempts(retry.maxAttempts());
+        backOff.setInitialInterval(retry.initialIntervalMs());
+        backOff.setMultiplier(retry.multiplier());
+        backOff.setMaxInterval(retry.maxIntervalMs());
 
+        String consumerId = properties.id();
         DeadLetterPublishingRecoverer dltRecoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
         ConsumerRecordRecoverer countingRecoverer = (record, exception) -> {
             meterRegistry.counter(MetricNames.MESSAGES_DLT, MetricNames.TAG_CONSUMER, consumerId).increment();
