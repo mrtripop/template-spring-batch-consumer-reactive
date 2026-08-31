@@ -113,10 +113,10 @@ class SampleConsumerIntegrationTest {
                 kafkaTemplate.send(new ProducerRecord<>(
                         TOPIC, key, new SamplePayload("id-fatal", SampleMessageProcessor.NON_RETRYABLE_TRIGGER)));
 
-                // Assert — 45s: the bulk of this test's elapsed time is Testcontainers/consumer-group
-                // startup overhead common to every test in this class (observed up to ~28s under
-                // machine load), not the DLT round-trip itself.
-                assertThat(pollForKey(dltConsumer, key, Duration.ofSeconds(45)))
+                // Assert — 90s: the bulk of this test's elapsed time is Testcontainers/consumer-group
+                // startup overhead common to every test in this class (observed 48-93s under heavy
+                // machine load in a full-suite run), not the DLT round-trip itself.
+                assertThat(pollForKey(dltConsumer, key, Duration.ofSeconds(90)))
                         .as("DLT record with key '%s' produced by this test's own message", key)
                         .isTrue();
             }
