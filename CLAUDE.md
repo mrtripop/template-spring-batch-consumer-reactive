@@ -21,12 +21,16 @@ ever actually running — writing the rule down did not make it happen.)
    method's Arrange/Act instead of referenced from a variable or constant?
    That single check catches most of what a human reviewer would otherwise
    have to type out by hand.
-2. **Check for path-scoped, non-invocable skills relevant to the files you
-   touched**, not just what shows up in the invokable-skills listing. This
-   project has at least one (`software-engineer-plugin`'s `testing-standards`,
-   `paths:`-scoped to test files, `user-invocable: false`) that exists
-   specifically to be pulled in automatically during review — don't rely on
-   a human to name it for you.
+2. **Check for the whole family of non-invocable rubric skills, not one at a
+   time as they happen to come up.** `software-engineer-plugin` ships (at
+   least): `testing-standards` and `code-style-standards`, both `paths:`
+   -scoped (test files; all source files, respectively — `code-style-standards`
+   lives under `develop/`, meaning apply it *while writing*, not only at
+   review time) — and `security-standards` / `performance-standards`, which
+   have **no** `paths:` field, so they can't be glob-matched: recognize them
+   by topic instead (auth/secrets/tokens/CORS → security; DB queries/
+   repositories/N+1 → performance). Neither is live in this project yet — no
+   auth, no persistence — but check again the moment either gets added.
 3. **Never add a new dependency to satisfy a "more idiomatic" fix without
    asking first**, especially if the code already states a deliberate stance
    against it (e.g. this project intentionally has no Boot Kafka starter —
@@ -52,6 +56,20 @@ ever actually running — writing the rule down did not make it happen.)
 - Don't introduce a new test framework (e.g. Cucumber/BDD) or a new
   dependency without an explicit, fresh ask — these are project-wide tooling
   decisions, not per-file style choices.
+- **Naming**: intent-revealing names, no abbreviations beyond universally
+  understood ones (`id`, `url`, `api`, `dto`), booleans/predicates prefixed
+  `is`/`has`/`can`/`should`, verb-phrase method names. Program to the
+  abstraction (`Map`/`List`, not `HashMap`/`ArrayList`) in variable/parameter/
+  return types. Prefer immutable types (records, `final` fields) by default.
+
+**Known, deliberate exception:** `MessageProcessor.process(...)` /
+`SampleMessageProcessor.process(...)` reads as a bare verb, which
+`code-style-standards` would flag — left as-is on purpose. It's the
+foundational port-interface method name used across the whole hexagonal
+design (interface, every implementer, the orchestration service, several
+test files); the type name already carries the meaning
+(`MessageProcessor.process`), and renaming it is an API-wide churn with no
+real clarity gain. Don't re-flag this one without a fresh, explicit reason.
 
 ## Working with GitHub, not GitLab
 
