@@ -26,6 +26,14 @@ class HexagonalArchitectureTest {
     private static final String ADAPTER_OUT_PACKAGE = BASE_PACKAGE + ".adapter.out";
     private static final String CONFIG_PACKAGE = BASE_PACKAGE + ".config";
 
+    // Layer names, each defined once and reused everywhere the layered-architecture rule
+    // both declares a layer and references it in an access rule.
+    private static final String DOMAIN_LAYER = "Domain";
+    private static final String APPLICATION_LAYER = "Application";
+    private static final String ADAPTER_IN_LAYER = "AdapterIn";
+    private static final String ADAPTER_OUT_LAYER = "AdapterOut";
+    private static final String CONFIG_LAYER = "Config";
+
     private final JavaClasses classes = new ClassFileImporter()
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
             .importPackages(BASE_PACKAGE);
@@ -36,17 +44,17 @@ class HexagonalArchitectureTest {
         // Arrange & Act
         ArchRule rule = layeredArchitecture()
                 .consideringOnlyDependenciesInLayers()
-                .layer("Domain").definedBy(DOMAIN_PACKAGE + "..")
-                .layer("Application").definedBy(APPLICATION_PACKAGE + "..")
-                .layer("AdapterIn").definedBy(ADAPTER_IN_PACKAGE + "..")
-                .layer("AdapterOut").definedBy(ADAPTER_OUT_PACKAGE + "..")
-                .layer("Config").definedBy(CONFIG_PACKAGE + "..")
+                .layer(DOMAIN_LAYER).definedBy(DOMAIN_PACKAGE + "..")
+                .layer(APPLICATION_LAYER).definedBy(APPLICATION_PACKAGE + "..")
+                .layer(ADAPTER_IN_LAYER).definedBy(ADAPTER_IN_PACKAGE + "..")
+                .layer(ADAPTER_OUT_LAYER).definedBy(ADAPTER_OUT_PACKAGE + "..")
+                .layer(CONFIG_LAYER).definedBy(CONFIG_PACKAGE + "..")
 
-                .whereLayer("Domain").mayOnlyBeAccessedByLayers("Application", "AdapterIn", "AdapterOut", "Config")
-                .whereLayer("Application").mayOnlyBeAccessedByLayers("AdapterIn", "AdapterOut", "Config")
-                .whereLayer("AdapterIn").mayOnlyBeAccessedByLayers("Config")
-                .whereLayer("AdapterOut").mayOnlyBeAccessedByLayers("Config")
-                .whereLayer("Config").mayNotBeAccessedByAnyLayer()
+                .whereLayer(DOMAIN_LAYER).mayOnlyBeAccessedByLayers(APPLICATION_LAYER, ADAPTER_IN_LAYER, ADAPTER_OUT_LAYER, CONFIG_LAYER)
+                .whereLayer(APPLICATION_LAYER).mayOnlyBeAccessedByLayers(ADAPTER_IN_LAYER, ADAPTER_OUT_LAYER, CONFIG_LAYER)
+                .whereLayer(ADAPTER_IN_LAYER).mayOnlyBeAccessedByLayers(CONFIG_LAYER)
+                .whereLayer(ADAPTER_OUT_LAYER).mayOnlyBeAccessedByLayers(CONFIG_LAYER)
+                .whereLayer(CONFIG_LAYER).mayNotBeAccessedByAnyLayer()
                 .allowEmptyShould(true);
 
         // Assert

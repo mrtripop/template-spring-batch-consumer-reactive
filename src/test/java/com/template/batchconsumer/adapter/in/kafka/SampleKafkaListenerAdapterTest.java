@@ -25,8 +25,11 @@ class SampleKafkaListenerAdapterTest {
     @DisplayName("converts a ConsumerRecord into a MessageEnvelope, copying every field")
     void toEnvelopeCopiesAllRecordFields() {
         // Arrange
+        int partition = 2;
+        long offset = 42L;
+        String key = "key-1";
         SamplePayload payload = SampleFixture.samplePayload("id-1", "hello");
-        ConsumerRecord<String, SamplePayload> record = SampleFixture.consumerRecord(2, 42L, "key-1", payload);
+        ConsumerRecord<String, SamplePayload> record = SampleFixture.consumerRecord(partition, offset, key, payload);
 
         // Act
         MessageEnvelope<SamplePayload> envelope = adapter.toEnvelope(record);
@@ -34,9 +37,9 @@ class SampleKafkaListenerAdapterTest {
         // Assert
         assertThat(envelope.consumerId()).isEqualTo(SampleFixture.CONSUMER_ID);
         assertThat(envelope.topic()).isEqualTo(SampleFixture.TOPIC);
-        assertThat(envelope.partition()).isEqualTo(2);
-        assertThat(envelope.offset()).isEqualTo(42L);
-        assertThat(envelope.key()).isEqualTo("key-1");
+        assertThat(envelope.partition()).isEqualTo(partition);
+        assertThat(envelope.offset()).isEqualTo(offset);
+        assertThat(envelope.key()).isEqualTo(key);
         assertThat(envelope.payload()).isEqualTo(payload);
     }
 
